@@ -596,9 +596,9 @@ checksum = "37b2a672a2cb129a2e41c10b1224bb368f9f37a2b16b612598138befd7b37eb5"
 
 [[package]]
 name = "cc"
-version = "1.2.1"
+version = "1.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fd9de9f2205d5ef3fd67e685b0df337994ddd4495e2a28d185500d0e1edfea47"
+checksum = "be714c154be609ec7f5dad223a33bf1482fff90472de28f7362806e6d4832b8c"
 dependencies = [
  "shlex",
 ]
@@ -1558,7 +1558,7 @@ dependencies = [
 [[package]]
 name = "icicle-bn254"
 version = "3.2.0"
-source = "git+https://github.com/ingonyama-zk/icicle-jolt.git?rev=94fe8ca#94fe8cad314a716c6a76c526cab7683da798bc8d"
+source = "git+https://github.com/ingonyama-zk/icicle-jolt.git?rev=2441eba#2441eba2e1bb8a8b2336a2ffb5e47653198eebf9"
 dependencies = [
  "cmake",
  "icicle-core",
@@ -1569,7 +1569,7 @@ dependencies = [
 [[package]]
 name = "icicle-core"
 version = "3.2.0"
-source = "git+https://github.com/ingonyama-zk/icicle-jolt.git?rev=94fe8ca#94fe8cad314a716c6a76c526cab7683da798bc8d"
+source = "git+https://github.com/ingonyama-zk/icicle-jolt.git?rev=2441eba#2441eba2e1bb8a8b2336a2ffb5e47653198eebf9"
 dependencies = [
  "hex",
  "icicle-runtime",
@@ -1581,7 +1581,7 @@ dependencies = [
 [[package]]
 name = "icicle-hash"
 version = "3.2.0"
-source = "git+https://github.com/ingonyama-zk/icicle-jolt.git?rev=94fe8ca#94fe8cad314a716c6a76c526cab7683da798bc8d"
+source = "git+https://github.com/ingonyama-zk/icicle-jolt.git?rev=2441eba#2441eba2e1bb8a8b2336a2ffb5e47653198eebf9"
 dependencies = [
  "cmake",
  "icicle-core",
@@ -1592,7 +1592,7 @@ dependencies = [
 [[package]]
 name = "icicle-runtime"
 version = "3.2.0"
-source = "git+https://github.com/ingonyama-zk/icicle-jolt.git?rev=94fe8ca#94fe8cad314a716c6a76c526cab7683da798bc8d"
+source = "git+https://github.com/ingonyama-zk/icicle-jolt.git?rev=2441eba#2441eba2e1bb8a8b2336a2ffb5e47653198eebf9"
 dependencies = [
  "cmake",
  "once_cell",
@@ -1894,6 +1894,7 @@ dependencies = [
  "rand 0.7.3",
  "rand_chacha 0.3.1",
  "rand_core 0.6.4",
+ "rand_distr",
  "rayon",
  "reqwest",
  "serde",
@@ -2668,6 +2669,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rand_distr"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32cb0b9bc82b0a0876c2dd994a7e7a2683d3e7390ca40e6886785ef0c7e3ee31"
+dependencies = [
+ "num-traits",
+ "rand 0.8.5",
+]
+
+[[package]]
 name = "rand_hc"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2825,15 +2836,14 @@ dependencies = [
 
 [[package]]
 name = "ring"
-version = "0.17.8"
+version = "0.17.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c17fa4cb658e3583423e915b9f3acc01cceaee1860e33d59ebae66adc3a2dc0d"
+checksum = "70ac5d832aa16abd7d1def883a8545280c20a60f523a370aa3a9617c2b8550ee"
 dependencies = [
  "cc",
  "cfg-if",
  "getrandom 0.2.15",
  "libc",
- "spin",
  "untrusted",
  "windows-sys 0.52.0",
 ]
@@ -3306,12 +3316,6 @@ dependencies = [
  "libc",
  "windows-sys 0.52.0",
 ]
-
-[[package]]
-name = "spin"
-version = "0.9.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
 
 [[package]]
 name = "spki"
