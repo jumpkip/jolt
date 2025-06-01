@@ -25,6 +25,7 @@ members = [
     "jolt-core",
     "tracer",
     "common",
+    "zklean-extractor",
     "jolt-sdk",
     "jolt-sdk/macros",
     "examples/collatz",
@@ -84,7 +85,6 @@ lto = "off"
 
 [profile.release]
 debug = 1
-codegen-units = 1
 lto = "fat"
 
 [profile.build-fast]

@@ -45,7 +45,7 @@ pub trait JoltField:
     /// conversion of small primitive integers (e.g. `u16` values) into field elements. For example,
     /// the arkworks BN254 scalar field requires a conversion into Montgomery form, which naively
     /// requires a field multiplication, but can instead be looked up.
-    type SmallValueLookupTables: Clone + Default + CanonicalSerialize + CanonicalDeserialize = ();
+    type SmallValueLookupTables: Clone + Default + CanonicalSerialize + CanonicalDeserialize;
 
     fn random<R: rand_core::RngCore>(rng: &mut R) -> Self;
     /// Computes the small-value lookup tables.
@@ -121,6 +121,45 @@ where
             Self::zero()
         } else {
             self.mul_1_optimized(other)
+        }
+    }
+}
+
+pub trait OptimizedMulI128<Output>: Sized {
+    fn mul_i128_0_optimized(self, other: i128) -> Output;
+    fn mul_i128_1_optimized(self, other: i128) -> Output;
+    fn mul_i128_01_optimized(self, other: i128) -> Output;
+}
+
+/// Implement `OptimizedMul` for `JoltField` with `i128`
+impl<T> OptimizedMulI128<T> for T
+where
+    T: JoltField,
+{
+    #[inline(always)]
+    fn mul_i128_0_optimized(self, other: i128) -> T {
+        if other.is_zero() {
+            Self::zero()
+        } else {
+            self.mul_i128(other)
+        }
+    }
+
+    #[inline(always)]
+    fn mul_i128_1_optimized(self, other: i128) -> T {
+        if other.is_one() {
+            self
+        } else {
+            self.mul_i128(other)
+        }
+    }
+
+    #[inline(always)]
+    fn mul_i128_01_optimized(self, other: i128) -> T {
+        if other.is_zero() {
+            Self::zero()
+        } else {
+            self.mul_i128_1_optimized(other)
         }
     }
 }
