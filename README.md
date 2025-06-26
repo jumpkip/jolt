@@ -4,7 +4,7 @@
 
 Just One Lookup Table.
 
-Jolt is a zkVM (zero-knowledge virtual machine) for RISC-V, built to be the simplest, fastest, and most extensible general-purpose of its kind. This repository currently contains an implementation of Jolt for the RISC-V 32-bit Base Integer instruction set (RV32I). _Contributors are welcome!_
+Jolt is a zkVM (zero-knowledge virtual machine) for RISC-V, built to be the simplest, fastest, and most extensible general-purpose zkVM of its kind. This repository currently contains an implementation of Jolt for the RISC-V 32-bit Base Integer instruction set (RV32I). _Contributors are welcome!_
 
 The Jolt [paper](https://eprint.iacr.org/2023/1217.pdf) was written by Arasu Arun, Srinath Setty, and Justin Thaler.
 
@@ -112,6 +112,12 @@ We have enabled [benchmarking during CI](https://a16z.github.io/jolt/dev/bench/)
 ## Acknowledgements
 
 *This repository started as a fork of https://github.com/arkworks-rs/spartan. Original Spartan [code](https://github.com/microsoft/Spartan) by Srinath Setty.*
+
+## Licensing
+
+Jolt is dual licensed under the following two licenses at your discretion: the MIT License (see [LICENSE-MIT](https://github.com/a16z/jolt/blob/main/LICENSE-MIT)), and the Apache License (see [LICENSE-APACHE](https://github.com/a16z/jolt/blob/main/LICENSE-APACHE)).
+
+Jolt is Copyright (c) a16z 2023. However, certain portions of the Jolt codebase are modifications or ports of third party code, as indicated in the applicable code headers for such code or in the copyright attribution notices we have included in the directories for such code.
 
 ## Disclaimer
 
