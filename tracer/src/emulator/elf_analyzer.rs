@@ -46,6 +46,7 @@ pub struct _ProgramHeader {
 /// ELF section header
 #[derive(Debug)]
 pub struct SectionHeader {
+    #[allow(dead_code)]
     sh_name: u32,
     pub sh_type: u32,
     _sh_flags: u64,
@@ -78,8 +79,10 @@ impl ElfAnalyzer {
     ///
     /// # Arguments
     /// * `data` ELF file content binary
-    pub fn new(data: Vec<u8>) -> Self {
-        ElfAnalyzer { data }
+    pub fn new(data: &[u8]) -> Self {
+        ElfAnalyzer {
+            data: data.to_vec(),
+        }
     }
 
     /// Checks if ELF file content is valid

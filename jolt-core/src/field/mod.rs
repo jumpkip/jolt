@@ -2,6 +2,8 @@ use std::fmt::{Debug, Display};
 use std::hash::Hash;
 use std::ops::{Add, AddAssign, Div, Mul, MulAssign, Neg, Sub, SubAssign};
 
+#[cfg(feature = "allocative")]
+use allocative::Allocative;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::{One, Zero};
 
@@ -38,6 +40,7 @@ pub trait JoltField:
     + CanonicalSerialize
     + CanonicalDeserialize
     + Hash
+    + MaybeAllocative
 {
     /// Number of bytes occupied by a single field element.
     const NUM_BYTES: usize;
@@ -50,10 +53,6 @@ pub trait JoltField:
     fn random<R: rand_core::RngCore>(rng: &mut R) -> Self;
     /// Computes the small-value lookup tables.
     fn compute_lookup_tables() -> Self::SmallValueLookupTables {
-        unimplemented!("Small-value lookup tables are unimplemented")
-    }
-    /// Initializes the static lookup tables using the provided values.
-    fn initialize_lookup_tables(_init: Self::SmallValueLookupTables) {
         unimplemented!("Small-value lookup tables are unimplemented")
     }
     /// Conversion from primitive integers to field elements in Montgomery form.
@@ -83,7 +82,28 @@ pub trait JoltField:
     fn mul_i128(&self, n: i128) -> Self {
         *self * Self::from_i128(n)
     }
+
+    fn mul_pow_2(&self, mut pow: usize) -> Self {
+        if pow > 255 {
+            panic!("pow > 255");
+        }
+        let mut res = *self;
+        while pow >= 64 {
+            res = res.mul_u64(1 << 63);
+            pow -= 63;
+        }
+        res.mul_u64(1 << pow)
+    }
 }
+
+#[cfg(feature = "allocative")]
+pub trait MaybeAllocative: Allocative {}
+#[cfg(feature = "allocative")]
+impl<T: Allocative> MaybeAllocative for T {}
+#[cfg(not(feature = "allocative"))]
+pub trait MaybeAllocative {}
+#[cfg(not(feature = "allocative"))]
+impl<T> MaybeAllocative for T {}
 
 pub trait OptimizedMul<Rhs, Output>: Sized + Mul<Rhs, Output = Output> {
     fn mul_0_optimized(self, other: Rhs) -> Self::Output;
@@ -165,3 +185,4 @@ where
 }
 
 pub mod ark;
+pub mod tracked_ark;
