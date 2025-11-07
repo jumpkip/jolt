@@ -1,5 +1,6 @@
 use crate::field::JoltField;
 use crate::poly::commitment::commitment_scheme::CommitmentScheme;
+use crate::poly::commitment::commitment_scheme::StreamingCommitmentScheme;
 
 use crate::guest::program::Program;
 use crate::poly::commitment::dory::DoryCommitmentScheme;
@@ -30,30 +31,38 @@ pub fn preprocess(
     JoltVerifierPreprocessing::from(&prover_preprocessing)
 }
 
-pub fn verify<F, PCS, FS>(
+pub fn verify<F, PCS: StreamingCommitmentScheme<Field = F>, FS>(
     inputs_bytes: &[u8],
+    trusted_advice_commitment: Option<<PCS as CommitmentScheme>::Commitment>,
     outputs_bytes: &[u8],
     proof: JoltProof<F, PCS, FS>,
     preprocessing: &JoltVerifierPreprocessing<F, PCS>,
 ) -> Result<(), ProofVerifyError>
 where
     F: JoltField,
-    PCS: CommitmentScheme<Field = F>,
     FS: Transcript,
     JoltRV64IMAC: Jolt<F, PCS, FS>,
 {
     use common::jolt_device::JoltDevice;
     let memory_config = MemoryConfig {
-        max_input_size: preprocessing.shared.memory_layout.max_input_size,
-        max_output_size: preprocessing.shared.memory_layout.max_output_size,
-        stack_size: preprocessing.shared.memory_layout.stack_size,
-        memory_size: preprocessing.shared.memory_layout.memory_size,
-        program_size: Some(preprocessing.shared.memory_layout.program_size),
+        max_untrusted_advice_size: preprocessing.memory_layout.max_untrusted_advice_size,
+        max_trusted_advice_size: preprocessing.memory_layout.max_trusted_advice_size,
+        max_input_size: preprocessing.memory_layout.max_input_size,
+        max_output_size: preprocessing.memory_layout.max_output_size,
+        stack_size: preprocessing.memory_layout.stack_size,
+        memory_size: preprocessing.memory_layout.memory_size,
+        program_size: Some(preprocessing.memory_layout.program_size),
     };
     let mut io_device = JoltDevice::new(&memory_config);
 
     io_device.inputs = inputs_bytes.to_vec();
     io_device.outputs = outputs_bytes.to_vec();
 
-    JoltRV64IMAC::verify(preprocessing, proof, io_device, None)
+    JoltRV64IMAC::verify(
+        preprocessing,
+        proof,
+        io_device,
+        trusted_advice_commitment,
+        None,
+    )
 }

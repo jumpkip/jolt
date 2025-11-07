@@ -1,3 +1,4 @@
+use crate::zkvm::instruction::{InstructionFlags, NUM_INSTRUCTION_FLAGS};
 use tracer::instruction::{
     virtual_xor_rotw::{VirtualXORROTW12, VirtualXORROTW16, VirtualXORROTW7, VirtualXORROTW8},
     RISCVCycle,
@@ -5,7 +6,7 @@ use tracer::instruction::{
 
 use crate::zkvm::lookup_table::{virtual_xor_rotw::VirtualXORROTWTable, LookupTables};
 
-use super::{CircuitFlags, InstructionFlags, InstructionLookup, LookupQuery, NUM_CIRCUIT_FLAGS};
+use super::{CircuitFlags, Flags, InstructionLookup, LookupQuery, NUM_CIRCUIT_FLAGS};
 
 // Macro to implement traits for each specific rotation value
 macro_rules! impl_virtual_xor_rotw {
@@ -16,17 +17,23 @@ macro_rules! impl_virtual_xor_rotw {
             }
         }
 
-        impl InstructionFlags for $type {
+        impl Flags for $type {
             fn circuit_flags(&self) -> [bool; NUM_CIRCUIT_FLAGS] {
                 let mut flags = [false; NUM_CIRCUIT_FLAGS];
-                flags[CircuitFlags::LeftOperandIsRs1Value as usize] = true;
-                flags[CircuitFlags::RightOperandIsRs2Value as usize] = true;
-                flags[CircuitFlags::WriteLookupOutputToRD as usize] = true;
-                flags[CircuitFlags::InlineSequenceInstruction as usize] =
-                    self.inline_sequence_remaining.is_some();
-                flags[CircuitFlags::DoNotUpdateUnexpandedPC as usize] =
-                    self.inline_sequence_remaining.unwrap_or(0) != 0;
-                flags[CircuitFlags::IsCompressed as usize] = self.is_compressed;
+                flags[CircuitFlags::WriteLookupOutputToRD] = true;
+                flags[CircuitFlags::VirtualInstruction] = self.virtual_sequence_remaining.is_some();
+                flags[CircuitFlags::DoNotUpdateUnexpandedPC] =
+                    self.virtual_sequence_remaining.unwrap_or(0) != 0;
+                flags[CircuitFlags::IsFirstInSequence] = self.is_first_in_sequence;
+                flags[CircuitFlags::IsCompressed] = self.is_compressed;
+                flags
+            }
+
+            fn instruction_flags(&self) -> [bool; NUM_INSTRUCTION_FLAGS] {
+                let mut flags = [false; NUM_INSTRUCTION_FLAGS];
+                flags[InstructionFlags::LeftOperandIsRs1Value] = true;
+                flags[InstructionFlags::RightOperandIsRs2Value] = true;
+                flags[InstructionFlags::IsRdNotZero] = self.operands.rd != 0;
                 flags
             }
         }
@@ -75,7 +82,9 @@ impl_virtual_xor_rotw!(VirtualXORROTW7, 7);
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::zkvm::instruction::test::materialize_entry_test;
+    use crate::zkvm::instruction::test::{
+        lookup_output_matches_trace_test, materialize_entry_test,
+    };
     use ark_bn254::Fr;
 
     #[test]
@@ -96,5 +105,25 @@ mod test {
     #[test]
     fn materialize_entry_7() {
         materialize_entry_test::<Fr, VirtualXORROTW7>();
+    }
+
+    #[test]
+    fn lookup_output_matches_trace_16() {
+        lookup_output_matches_trace_test::<VirtualXORROTW16>();
+    }
+
+    #[test]
+    fn lookup_output_matches_trace_12() {
+        lookup_output_matches_trace_test::<VirtualXORROTW12>();
+    }
+
+    #[test]
+    fn lookup_output_matches_trace_8() {
+        lookup_output_matches_trace_test::<VirtualXORROTW8>();
+    }
+
+    #[test]
+    fn lookup_output_matches_trace_7() {
+        lookup_output_matches_trace_test::<VirtualXORROTW7>();
     }
 }

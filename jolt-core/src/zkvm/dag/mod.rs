@@ -7,7 +7,10 @@ pub mod state_manager;
 mod tests {
     use crate::host;
     use crate::poly::commitment::dory::DoryCommitmentScheme;
-    use crate::zkvm::dag::jolt_dag::JoltDAG;
+    use crate::poly::opening_proof::ProverOpeningAccumulator;
+    use crate::transcripts::{Blake2bTranscript, Transcript};
+    use crate::utils::math::Math;
+    use crate::zkvm::dag::jolt_dag::prove_jolt_dag;
     use crate::zkvm::dag::state_manager::StateManager;
     use crate::zkvm::{Jolt, JoltRV64IMAC, JoltVerifierPreprocessing};
     use ark_bn254::Fr;
@@ -22,7 +25,8 @@ mod tests {
         let mut program = host::Program::new("fibonacci-guest");
         let (bytecode, init_memory_state, _) = program.decode();
         let inputs = postcard::to_stdvec(&9u8).unwrap();
-        let (mut trace, final_memory_state, mut program_io) = program.trace(&inputs);
+        let (lazy_trace, mut trace, final_memory_state, mut program_io) =
+            program.trace(&inputs, &[], &[]);
         trace.truncate(100);
         program_io.outputs[0] = 0; // change the output to 0
 
@@ -46,18 +50,26 @@ mod tests {
                 .map_or(0, |pos| pos + 1),
         );
 
+        // TODO: Create prover struct. Construct with prover state and pass prover
+        // object to prover_jolt_dag.
+        let opening_accumulator = ProverOpeningAccumulator::new(trace.len().log_2());
+        let transcript = &mut Blake2bTranscript::new(b"Jolt");
         let state_manager = StateManager::new_prover(
             &preprocessing,
+            lazy_trace,
             trace,
             program_io.clone(),
+            None,
             final_memory_state,
         );
-        let (proof, _) = JoltDAG::prove(state_manager).ok().unwrap();
+        let (proof, _) = prove_jolt_dag(state_manager, opening_accumulator, transcript)
+            .ok()
+            .unwrap();
 
         let verifier_preprocessing =
             JoltVerifierPreprocessing::<Fr, DoryCommitmentScheme>::from(&preprocessing);
         let _verification_result =
-            JoltRV64IMAC::verify(&verifier_preprocessing, proof, program_io, None);
+            JoltRV64IMAC::verify(&verifier_preprocessing, proof, program_io, None, None);
     }
 
     #[test]
@@ -67,7 +79,8 @@ mod tests {
         let mut program = host::Program::new("fibonacci-guest");
         let inputs = postcard::to_stdvec(&1u8).unwrap();
         let (bytecode, init_memory_state, _) = program.decode();
-        let (mut trace, final_memory_state, mut program_io) = program.trace(&inputs);
+        let (lazy_trace, mut trace, final_memory_state, mut program_io) =
+            program.trace(&inputs, &[], &[]);
 
         // Since the preprocessing is done with the original memory layout, the verifier should fail
         let preprocessing = JoltRV64IMAC::prover_preprocess(
@@ -96,17 +109,23 @@ mod tests {
                 .map_or(0, |pos| pos + 1),
         );
 
+        let opening_accumulator = ProverOpeningAccumulator::new(trace.len().log_2());
+        let transcript = &mut Blake2bTranscript::new(b"Jolt");
         let state_manager = StateManager::new_prover(
             &preprocessing,
+            lazy_trace,
             trace,
             program_io.clone(),
+            None,
             final_memory_state,
         );
-        let (proof, _) = JoltDAG::prove(state_manager).ok().unwrap();
+        let (proof, _) = prove_jolt_dag(state_manager, opening_accumulator, transcript)
+            .ok()
+            .unwrap();
 
         let verifier_preprocessing =
             JoltVerifierPreprocessing::<Fr, DoryCommitmentScheme>::from(&preprocessing);
         let _verification_result =
-            JoltRV64IMAC::verify(&verifier_preprocessing, proof, program_io, None);
+            JoltRV64IMAC::verify(&verifier_preprocessing, proof, program_io, None, None);
     }
 }

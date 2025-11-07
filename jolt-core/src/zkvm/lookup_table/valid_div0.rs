@@ -4,7 +4,10 @@ use super::prefixes::{PrefixEval, Prefixes};
 use super::suffixes::{SuffixEval, Suffixes};
 use super::JoltLookupTable;
 use super::PrefixSuffixDecomposition;
-use crate::{field::JoltField, utils::uninterleave_bits};
+use crate::{
+    field::{ChallengeFieldOps, FieldChallengeOps, JoltField},
+    utils::uninterleave_bits,
+};
 
 #[derive(Copy, Clone, Default, Debug, Serialize, Deserialize, PartialEq)]
 /// (divisor, quotient)
@@ -17,6 +20,7 @@ impl<const XLEN: usize> JoltLookupTable for ValidDiv0Table<XLEN> {
             match XLEN {
                 8 => (quotient == u8::MAX as u64).into(),
                 32 => (quotient == u32::MAX as u64).into(),
+                64 => (quotient == u64::MAX).into(),
                 _ => panic!("{XLEN}-bit word size is unsupported"),
             }
         } else {
@@ -24,7 +28,11 @@ impl<const XLEN: usize> JoltLookupTable for ValidDiv0Table<XLEN> {
         }
     }
 
-    fn evaluate_mle<F: JoltField>(&self, r: &[F]) -> F {
+    fn evaluate_mle<F, C>(&self, r: &[C]) -> F
+    where
+        C: ChallengeFieldOps<F>,
+        F: JoltField + FieldChallengeOps<C>,
+    {
         let mut divisor_is_zero = F::one();
         let mut is_valid_div_by_zero = F::one();
 

@@ -8,7 +8,7 @@ use rayon::prelude::*;
 use strum::{EnumCount, IntoEnumIterator};
 use strum_macros::{EnumCount as EnumCountMacro, EnumIter as EnumIterMacro};
 
-use crate::field::JoltField;
+use crate::field::{ChallengeFieldOps, FieldChallengeOps, JoltField};
 use crate::poly::dense_mlpoly::DensePolynomial;
 use crate::poly::multilinear_polynomial::{
     BindingOrder, MultilinearPolynomial, PolynomialBinding, PolynomialEvaluation,
@@ -25,12 +25,15 @@ pub enum Prefix {
     Identity,
 }
 
+/// Array storing prefix polynomial evaluations, indexed by Prefix enum variants.
 pub type PrefixCheckpoints<F> = [Option<F>; Prefix::COUNT];
 
 #[derive(Default, Allocative)]
+/// Registry storing prefix polynomial evaluations at r_prefix for all prefix types.
 pub struct PrefixRegistry<F: JoltField> {
+    /// checkpoints[i] = P_i(r_prefix) where P_i is the i-th prefix polynomial evaluation.
     pub checkpoints: PrefixCheckpoints<F>,
-    #[allocative(skip)]
+    /// Cached polynomial representations for potential reuse across decompositions.
     pub polys: [Option<Arc<RwLock<CachedPolynomial<F>>>>; Prefix::COUNT],
 }
 
@@ -77,18 +80,28 @@ impl<T> IndexMut<Prefix> for [T; Prefix::COUNT] {
     }
 }
 
+#[derive(Allocative)]
 pub struct CachedPolynomial<F: JoltField> {
     pub inner: MultilinearPolynomial<F>,
+    #[allocative(skip)]
     pub sumcheck_evals_cache: Vec<OnceCell<(F, F)>>,
     pub bound_this_round: bool,
 }
 
 impl<F: JoltField> PolynomialEvaluation<F> for CachedPolynomial<F> {
-    fn evaluate(&self, x: &[F]) -> F {
+    fn evaluate<C>(&self, x: &[C]) -> F
+    where
+        C: Copy + Send + Sync + Into<F> + ChallengeFieldOps<F>,
+        F: FieldChallengeOps<C>,
+    {
         self.inner.evaluate(x)
     }
 
-    fn batch_evaluate(_polys: &[&Self], _r: &[F]) -> Vec<F> {
+    fn batch_evaluate<C>(_polys: &[&Self], _r: &[C]) -> Vec<F>
+    where
+        C: Copy + Send + Sync + Into<F>,
+        F: std::ops::Mul<C, Output = F> + std::ops::SubAssign<F>,
+    {
         unimplemented!("Currently unused")
     }
 
@@ -98,14 +111,14 @@ impl<F: JoltField> PolynomialEvaluation<F> for CachedPolynomial<F> {
 }
 
 impl<F: JoltField> PolynomialBinding<F> for CachedPolynomial<F> {
-    fn bind(&mut self, r: F, order: BindingOrder) {
+    fn bind(&mut self, r: F::Challenge, order: BindingOrder) {
         if !self.bound_this_round {
             self.inner.bind(r, order);
             self.bound_this_round = true;
         }
     }
 
-    fn bind_parallel(&mut self, r: F, order: BindingOrder) {
+    fn bind_parallel(&mut self, r: F::Challenge, order: BindingOrder) {
         if !self.bound_this_round {
             self.inner.bind_parallel(r, order);
             self.bound_this_round = true;
@@ -186,15 +199,23 @@ pub trait PrefixSuffixPolynomial<F: JoltField, const ORDER: usize> {
 }
 
 #[derive(Allocative)]
+/// Decomposes a polynomial f(x) = Σ_i P_i(x_prefix)·Q_i(x_suffix) for efficient sumcheck evaluation.
 pub struct PrefixSuffixDecomposition<F: JoltField, const ORDER: usize> {
     #[allocative(skip)]
+    /// Original polynomial to decompose (e.g., OperandPolynomial, IdentityPolynomial).
     poly: Box<dyn PrefixSuffixPolynomial<F, ORDER> + Send + Sync>,
     #[allocative(skip)]
+    /// P[i] = prefix polynomial i, computed from registry and cached for reuse.
     P: [Option<Arc<RwLock<CachedPolynomial<F>>>>; ORDER],
+    /// Q[i] = suffix polynomial i, recomputed each phase from trace indices.
     Q: [DensePolynomial<F>; ORDER],
+    /// Number of variables per chunk (typically LOG_M).
     chunk_len: usize,
+    /// Total number of variables (typically LOG_K).
     total_len: usize,
+    /// Current phase in multi-phase decomposition.
     phase: usize,
+    /// Current round within phase.
     round: usize,
 }
 
@@ -252,7 +273,7 @@ impl<F: JoltField, const ORDER: usize> PrefixSuffixDecomposition<F, ORDER> {
     /// Read more about prefix-suffix argument in Appendix A of the paper
     /// https://eprint.iacr.org/2025/611.pdf
     #[tracing::instrument(skip_all, name = "PrefixSuffix::init_Q")]
-    pub fn init_Q(&mut self, u_evals: &[F], indices: &[(usize, LookupBits)]) {
+    pub fn init_Q(&mut self, u_evals: &[F], indices: &[usize], lookup_bits: &[LookupBits]) {
         let poly_len = self.chunk_len.pow2();
         let suffix_len = self.suffix_len();
         let suffixes = self.poly.suffixes();
@@ -266,7 +287,8 @@ impl<F: JoltField, const ORDER: usize> PrefixSuffixDecomposition<F, ORDER> {
                 let mut chunk_result: [Vec<F::Unreduced<7>>; ORDER] =
                     std::array::from_fn(|_| unsafe_allocate_zero_vec(poly_len));
 
-                for (j, k) in chunk {
+                for j in chunk {
+                    let k = lookup_bits[*j];
                     let (prefix_bits, suffix_bits) = k.split(suffix_len);
                     for (suffix, result) in suffixes.iter().zip(chunk_result.iter_mut()) {
                         let t = suffix.suffix_mle(suffix_bits);
@@ -312,7 +334,8 @@ impl<F: JoltField, const ORDER: usize> PrefixSuffixDecomposition<F, ORDER> {
         left: &mut PrefixSuffixDecomposition<F, ORDER>,
         right: &mut PrefixSuffixDecomposition<F, ORDER>,
         u_evals: &[F],
-        indices: &[(usize, LookupBits)],
+        indices: &[usize],
+        lookup_bits: &[LookupBits],
     ) {
         debug_assert_eq!(left.chunk_len, right.chunk_len);
         debug_assert_eq!(left.total_len, right.total_len);
@@ -334,7 +357,8 @@ impl<F: JoltField, const ORDER: usize> PrefixSuffixDecomposition<F, ORDER> {
                 let mut chunk_right: [Vec<F::Unreduced<7>>; ORDER] =
                     std::array::from_fn(|_| unsafe_allocate_zero_vec(poly_len));
 
-                for (j, k) in chunk {
+                for j in chunk {
+                    let k = lookup_bits[*j];
                     let (prefix_bits, suffix_bits) = k.split(suffix_len);
 
                     // Left accumulators
@@ -450,7 +474,7 @@ impl<F: JoltField, const ORDER: usize> PrefixSuffixDecomposition<F, ORDER> {
         (eval_0, eval_2_right + eval_2_right - eval_2_left)
     }
 
-    pub fn bind(&mut self, r: F) {
+    pub fn bind(&mut self, r: F::Challenge) {
         self.P.par_iter().for_each(|p| {
             if let Some(p) = p {
                 let mut p = p.write().unwrap();
@@ -504,11 +528,10 @@ impl<F: JoltField, const ORDER: usize> PrefixSuffixDecomposition<F, ORDER> {
 
 #[cfg(test)]
 pub mod tests {
+    use super::*;
     use ark_bn254::Fr;
     use ark_ff::{AdditiveGroup, Field};
     use ark_std::test_rng;
-
-    use super::*;
 
     pub fn prefix_suffix_decomposition_test<
         const NUM_VARS: usize,
@@ -530,9 +553,9 @@ pub mod tests {
         let mut prefix_registry = PrefixRegistry::new();
         let mut ps = PrefixSuffixDecomposition::new(Box::new(poly.clone()), PREFIX_LEN, NUM_VARS);
 
-        let indices = (0..(1 << NUM_VARS))
+        let indices: Vec<_> = (0..(1 << NUM_VARS)).collect();
+        let lookup_bits = (0..(1 << NUM_VARS))
             .map(|i| LookupBits::new(i, NUM_VARS))
-            .enumerate()
             .collect::<Vec<_>>();
 
         let mut rr = vec![];
@@ -543,6 +566,7 @@ pub mod tests {
                     .map(|_| Fr::ONE)
                     .collect::<Vec<_>>(),
                 &indices,
+                &lookup_bits,
             );
 
             for round in (0..PREFIX_LEN).rev() {
@@ -604,8 +628,8 @@ pub mod tests {
 
                     assert_eq!(direct_eval, eval.1);
                 }
-                let r = Fr::random(&mut rng);
-                rr.push(r);
+                let r = <Fr as JoltField>::Challenge::random(&mut rng);
+                rr.push(r.into());
                 ps.bind(r);
             }
 

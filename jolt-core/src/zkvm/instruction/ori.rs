@@ -1,8 +1,9 @@
+use crate::zkvm::instruction::{InstructionFlags, NUM_INSTRUCTION_FLAGS};
 use tracer::instruction::{ori::ORI, RISCVCycle};
 
 use crate::zkvm::lookup_table::{or::OrTable, LookupTables};
 
-use super::{CircuitFlags, InstructionFlags, InstructionLookup, LookupQuery, NUM_CIRCUIT_FLAGS};
+use super::{CircuitFlags, Flags, InstructionLookup, LookupQuery, NUM_CIRCUIT_FLAGS};
 
 impl<const XLEN: usize> InstructionLookup<XLEN> for ORI {
     fn lookup_table(&self) -> Option<LookupTables<XLEN>> {
@@ -10,17 +11,23 @@ impl<const XLEN: usize> InstructionLookup<XLEN> for ORI {
     }
 }
 
-impl InstructionFlags for ORI {
+impl Flags for ORI {
     fn circuit_flags(&self) -> [bool; NUM_CIRCUIT_FLAGS] {
         let mut flags = [false; NUM_CIRCUIT_FLAGS];
-        flags[CircuitFlags::WriteLookupOutputToRD as usize] = true;
-        flags[CircuitFlags::LeftOperandIsRs1Value as usize] = true;
-        flags[CircuitFlags::RightOperandIsImm as usize] = true;
-        flags[CircuitFlags::InlineSequenceInstruction as usize] =
-            self.inline_sequence_remaining.is_some();
-        flags[CircuitFlags::DoNotUpdateUnexpandedPC as usize] =
-            self.inline_sequence_remaining.unwrap_or(0) != 0;
-        flags[CircuitFlags::IsCompressed as usize] = self.is_compressed;
+        flags[CircuitFlags::WriteLookupOutputToRD] = true;
+        flags[CircuitFlags::VirtualInstruction] = self.virtual_sequence_remaining.is_some();
+        flags[CircuitFlags::DoNotUpdateUnexpandedPC] =
+            self.virtual_sequence_remaining.unwrap_or(0) != 0;
+        flags[CircuitFlags::IsFirstInSequence] = self.is_first_in_sequence;
+        flags[CircuitFlags::IsCompressed] = self.is_compressed;
+        flags
+    }
+
+    fn instruction_flags(&self) -> [bool; NUM_INSTRUCTION_FLAGS] {
+        let mut flags = [false; NUM_INSTRUCTION_FLAGS];
+        flags[InstructionFlags::LeftOperandIsRs1Value] = true;
+        flags[InstructionFlags::RightOperandIsImm] = true;
+        flags[InstructionFlags::IsRdNotZero] = self.operands.rd != 0;
         flags
     }
 }
@@ -59,7 +66,9 @@ impl<const XLEN: usize> LookupQuery<XLEN> for RISCVCycle<ORI> {
 
 #[cfg(test)]
 mod test {
-    use crate::zkvm::instruction::test::materialize_entry_test;
+    use crate::zkvm::instruction::test::{
+        lookup_output_matches_trace_test, materialize_entry_test,
+    };
 
     use super::*;
     use ark_bn254::Fr;
@@ -67,5 +76,10 @@ mod test {
     #[test]
     fn materialize_entry() {
         materialize_entry_test::<Fr, ORI>();
+    }
+
+    #[test]
+    fn lookup_output_matches_trace() {
+        lookup_output_matches_trace_test::<ORI>();
     }
 }

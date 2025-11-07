@@ -1,15 +1,31 @@
+//! Uniform Spartan key and row-split evaluators
+//!
+//! - `UniformSpartanKey` encapsulates sizes, a stable shape digest, and helpers
+//!   to evaluate the uniform R1CS along the univariate-skip row split used by
+//!   Spartan outer:
+//!   - `evaluate_small_matrix_rlc` (row-axis: `[r_stream, r0]` with Lagrange on
+//!     the first-group domain and linear blend by `r_stream`),
+//!   - `evaluate_uniform_a/b_at_point`, and
+//!   - `evaluate_z_mle_with_segment_evals` for the variable MLE z.
+//! - Column variables are ordered by `JoltR1CSInputs`; row grouping follows
+//!   `R1CS_CONSTRAINTS_FIRST_GROUP`/`R1CS_CONSTRAINTS_SECOND_GROUP` from
+//!   `r1cs::constraints`.
+
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use sha3::Sha3_256;
 
 use crate::{
     field::JoltField,
-    poly::eq_poly::EqPolynomial,
+    poly::{eq_poly::EqPolynomial, lagrange_poly::LagrangePolynomial},
     utils::{index_to_field_bitvector, thread::unsafe_allocate_zero_vec},
 };
 
 use sha3::Digest;
 
-use super::constraints::{Constraint, LC, UNIFORM_R1CS};
+use super::constraints::{
+    R1CSConstraint, LC, OUTER_UNIVARIATE_SKIP_DOMAIN_SIZE, R1CS_CONSTRAINTS,
+    R1CS_CONSTRAINTS_FIRST_GROUP, R1CS_CONSTRAINTS_SECOND_GROUP,
+};
 use crate::utils::math::Math;
 use crate::zkvm::r1cs::inputs::JoltR1CSInputs;
 
@@ -23,60 +39,6 @@ pub struct UniformSpartanKey<F: JoltField> {
 
     /// Digest of verifier key
     pub(crate) vk_digest: F,
-}
-
-/// (row, col, value)
-pub type Coeff<F> = (usize, usize, F);
-
-/// (Deprecated) Sparse representation of a single R1CS matrix.
-#[derive(CanonicalSerialize, CanonicalDeserialize)]
-pub struct SparseConstraints<F: JoltField> {
-    /// Non-zero, non-constant coefficients
-    pub vars: Vec<Coeff<F>>,
-
-    /// Non-zero constant coefficients stored as (uniform_row_index, coeff)
-    pub consts: Vec<(usize, F)>,
-}
-
-impl<F: JoltField> SparseConstraints<F> {
-    pub fn empty_with_capacity(vars: usize, consts: usize) -> Self {
-        Self {
-            vars: Vec::with_capacity(vars),
-            consts: Vec::with_capacity(consts),
-        }
-    }
-}
-
-/// (Deprecated) Sparse representation of all 3 uniform R1CS matrices.
-#[derive(CanonicalSerialize, CanonicalDeserialize)]
-pub struct UniformR1CS<F: JoltField> {
-    pub a: SparseConstraints<F>,
-    pub b: SparseConstraints<F>,
-    pub c: SparseConstraints<F>,
-
-    /// Unpadded number of variables in uniform instance.
-    pub num_vars: usize,
-
-    /// Unpadded number of rows in uniform instance.
-    pub num_rows: usize,
-}
-
-/// (Optional legacy) Represents a single constraint row with possible offsets.
-#[derive(CanonicalSerialize, CanonicalDeserialize, Debug, PartialEq)]
-pub struct SparseEqualityItem<F: JoltField> {
-    /// (uniform_col, offset, val)
-    pub offset_vars: Vec<(usize, bool, F)>,
-
-    pub constant: F,
-}
-
-impl<F: JoltField> SparseEqualityItem<F> {
-    pub fn empty() -> Self {
-        Self {
-            offset_vars: vec![],
-            constant: F::zero(),
-        }
-    }
 }
 
 impl<F: JoltField> UniformSpartanKey<F> {
@@ -99,67 +61,68 @@ impl<F: JoltField> UniformSpartanKey<F> {
 
     #[inline]
     fn num_rows_per_step() -> usize {
-        UNIFORM_R1CS.len()
+        R1CS_CONSTRAINTS.len()
     }
 
     pub fn num_vars_uniform_padded(&self) -> usize {
         Self::num_vars().next_power_of_two()
     }
 
-    /// Number of variables across all steps padded to next power of two.
-    pub fn num_vars_total(&self) -> usize {
-        self.num_steps * Self::num_vars().next_power_of_two()
-    }
-
-    /// Number of columns across all steps + constant column padded to next power of two.
-    pub fn num_cols_total(&self) -> usize {
-        2 * self.num_vars_total()
-    }
-
-    pub fn num_rows_total(&self) -> usize {
-        self.num_cons_total
-    }
-
-    /// Padded number of constraint rows per step.
-    pub fn padded_row_constraint_per_step(&self) -> usize {
-        // JP: This is redundant with `padded_rows_per_step`. Can we reuse that instead?
-        Self::num_rows_per_step().next_power_of_two()
+    /// Number of cycle variables, e.g. number of bits needed to represent all cycles in the trace
+    pub fn num_cycle_vars(&self) -> usize {
+        self.num_steps.next_power_of_two().log_2()
     }
 
     /// Number of bits needed for all rows.
+    /// With univariate skip, this is the number of cycle variables plus two (one for univariate skip of degree ~13-15, and one for the streaming round)
     pub fn num_rows_bits(&self) -> usize {
-        let row_count = self.num_steps * self.padded_row_constraint_per_step();
-        row_count.next_power_of_two().log_2()
+        self.num_cycle_vars() + 2
     }
 
     /// Evaluate the RLC of A_small, B_small, C_small matrices at (r_constr, y_var)
     /// This function only handles uniform constraints, ignoring cross-step constraints
     /// Returns evaluations for each y_var
     #[tracing::instrument(skip_all, name = "UniformSpartanKey::evaluate_small_matrix_rlc")]
-    pub fn evaluate_small_matrix_rlc(&self, r_constr: &[F], r_rlc: F) -> Vec<F> {
-        assert_eq!(
-            r_constr.len(),
-            (Self::num_rows_per_step() + 1).next_power_of_two().log_2()
-        );
+    pub fn evaluate_small_matrix_rlc(
+        &self,
+        r_constr: &[F::Challenge],
+        r_rlc: F::Challenge,
+    ) -> Vec<F> {
+        // With univariate skip, `r_constr` consists of two challenges in the canonical order:
+        // - r_constr[0] = r_stream: selector for the second (odd) group in the row split
+        // - r_constr[1] = r0:       challenge for the univariate-skip first-round (Lagrange basis)
+        assert_eq!(r_constr.len(), 2);
 
-        let eq_rx = EqPolynomial::evals(r_constr);
+        let r_stream = r_constr[0];
+        let lag_evals = LagrangePolynomial::<F>::evals::<
+            F::Challenge,
+            OUTER_UNIVARIATE_SKIP_DOMAIN_SIZE,
+        >(&r_constr[1]);
+        let w_group0 = F::one() - r_stream; // weight for first group
+        let w_group1 = r_stream; // weight for second group
+
         let num_vars = Self::num_vars();
         let num_vars_padded = num_vars.next_power_of_two();
 
         // Allocate output vector and precompute rlc powers
         let mut evals = unsafe_allocate_zero_vec(num_vars_padded);
-        let r_sq = r_rlc.square();
 
-        // Accumulate directly: for each row, add wr * (A_terms + r*B_terms + r^2*C_terms)
-        for (row_idx, row_named) in UNIFORM_R1CS.iter().enumerate() {
+        // Accumulate using explicit FIRST and SECOND groups
+        // First group weighted by (1 - r_stream)
+        for (i, row_named) in R1CS_CONSTRAINTS_FIRST_GROUP.iter().enumerate() {
             let row = &row_named.cons;
-            let wr = eq_rx[row_idx];
-
+            let wr = w_group0 * lag_evals[i];
             row.a.accumulate_evaluations(&mut evals, wr, num_vars);
             row.b
                 .accumulate_evaluations(&mut evals, wr * r_rlc, num_vars);
-            row.c
-                .accumulate_evaluations(&mut evals, wr * r_sq, num_vars);
+        }
+        // Second group weighted by r_stream
+        for (i, row_named) in R1CS_CONSTRAINTS_SECOND_GROUP.iter().enumerate() {
+            let row = &row_named.cons;
+            let wr = w_group1 * lag_evals[i];
+            row.a.accumulate_evaluations(&mut evals, wr, num_vars);
+            row.b
+                .accumulate_evaluations(&mut evals, wr * r_rlc, num_vars);
         }
 
         evals
@@ -173,7 +136,7 @@ impl<F: JoltField> UniformSpartanKey<F> {
     pub fn evaluate_z_mle_with_segment_evals(
         &self,
         segment_evals: &[F],
-        r: &[F],
+        r: &[F::Challenge],
         with_const: bool,
     ) -> F {
         assert_eq!(Self::num_vars(), segment_evals.len());
@@ -183,14 +146,15 @@ impl<F: JoltField> UniformSpartanKey<F> {
         let num_vars = self.num_vars_uniform_padded();
         let var_bits = num_vars.log_2();
 
-        let eq_ry_var = EqPolynomial::evals(r);
+        let eq_ry_var = EqPolynomial::<F>::evals(r);
         let eval_variables: F = (0..Self::num_vars())
             .map(|var_index| eq_ry_var[var_index] * segment_evals[var_index])
             .sum();
 
         // Evaluate at the constant position if it exists within the padded space
         let const_eval = if Self::num_vars() < num_vars && with_const {
-            let const_position_bits = index_to_field_bitvector(Self::num_vars() as u128, var_bits);
+            let const_position_bits: Vec<F> =
+                index_to_field_bitvector(Self::num_vars() as u128, var_bits);
             EqPolynomial::mle(r, &const_position_bits)
         } else {
             F::zero()
@@ -200,46 +164,69 @@ impl<F: JoltField> UniformSpartanKey<F> {
     }
 
     /// Evaluate uniform matrix A at a specific point (rx_constr, ry_var)
-    pub fn evaluate_uniform_a_at_point(&self, rx_constr: &[F], ry_var: &[F]) -> F {
+    pub fn evaluate_uniform_a_at_point(
+        &self,
+        rx_constr: &[F::Challenge],
+        ry_var: &[F::Challenge],
+    ) -> F {
         self.evaluate_uniform_matrix_at_point(|row| &row.a, rx_constr, ry_var)
     }
 
     /// Evaluate uniform matrix B at a specific point (rx_constr, ry_var)
-    pub fn evaluate_uniform_b_at_point(&self, rx_constr: &[F], ry_var: &[F]) -> F {
+    pub fn evaluate_uniform_b_at_point(
+        &self,
+        rx_constr: &[F::Challenge],
+        ry_var: &[F::Challenge],
+    ) -> F {
         self.evaluate_uniform_matrix_at_point(|row| &row.b, rx_constr, ry_var)
     }
 
-    /// Evaluate uniform matrix C at a specific point (rx_constr, ry_var)
-    pub fn evaluate_uniform_c_at_point(&self, rx_constr: &[F], ry_var: &[F]) -> F {
-        self.evaluate_uniform_matrix_at_point(|row| &row.c, rx_constr, ry_var)
-    }
-
     /// Helper function to evaluate a uniform matrix at a specific point
+    /// Uses univariate-skip semantics on the row axis: split rows into two groups,
+    /// weight them by (1 - r_stream) and r_stream respectively, and use Lagrange basis
+    /// for the first-round (size-OUTER_UNIVARIATE_SKIP_DOMAIN_SIZE) row domain.
     fn evaluate_uniform_matrix_at_point(
         &self,
-        select: impl Fn(&Constraint) -> &LC,
-        rx_constr: &[F],
-        ry_var: &[F],
+        select: impl Fn(&R1CSConstraint) -> &LC,
+        rx_constr: &[F::Challenge],
+        ry_var: &[F::Challenge],
     ) -> F {
-        // Precompute eq tables for rows and columns once
-        let eq_rx = EqPolynomial::evals(rx_constr);
-        let eq_ry = EqPolynomial::evals(ry_var);
+        // Row axis: r_constr = [r_stream, r0]; use Lagrange basis for first-round
+        // (half the number of R1CS constraints)
+        // and linear blend for the two groups using r_stream
+        debug_assert!(rx_constr.len() >= 2);
+        let r_stream = rx_constr[0];
+        let r0 = rx_constr[1];
+
+        // Lagrange basis over symmetric domain for first-round rows
+        let lag_basis =
+            LagrangePolynomial::<F>::evals::<F::Challenge, OUTER_UNIVARIATE_SKIP_DOMAIN_SIZE>(&r0);
+
+        // Column axis: standard eq basis over variables
+        let eq_ry = EqPolynomial::<F>::evals(ry_var);
 
         let num_vars = JoltR1CSInputs::num_inputs();
-
-        debug_assert!(UNIFORM_R1CS.len() <= eq_rx.len());
         debug_assert!(num_vars < eq_ry.len());
 
-        let mut acc = F::zero();
-        for (row_idx, row_named) in UNIFORM_R1CS.iter().enumerate() {
+        let mut acc_first_group = F::zero();
+        // First group: 14 rows evaluated with Lagrange basis in group order
+        for (i, row_named) in R1CS_CONSTRAINTS_FIRST_GROUP.iter().enumerate() {
             let row = &row_named.cons;
-            let wr = eq_rx[row_idx];
             let lc = select(row);
             let col_contrib = lc.dot_eq_ry::<F>(&eq_ry, num_vars);
-            acc += wr * col_contrib;
+            acc_first_group += lag_basis[i] * col_contrib;
         }
 
-        acc
+        let mut acc_second_group = F::zero();
+        // Second group: remaining 13 rows, uniformly weighted by r_stream in group order
+        for (i, row_named) in R1CS_CONSTRAINTS_SECOND_GROUP.iter().enumerate() {
+            let row = &row_named.cons;
+            let lc = select(row);
+            let col_contrib = lc.dot_eq_ry::<F>(&eq_ry, num_vars);
+            acc_second_group += lag_basis[i] * col_contrib;
+        }
+
+        acc_first_group + r_stream * (acc_second_group - acc_first_group)
     }
 
     /// Returns the digest of the R1CS "shape" derived from compile-time constants
@@ -247,23 +234,21 @@ impl<F: JoltField> UniformSpartanKey<F> {
     /// - domain tag
     /// - num_steps (u64 BE)
     /// - num_vars (u32 BE)
-    /// - for each row in UNIFORM_R1CS:
+    /// - for each row in R1CS_CONSTRAINTS:
     ///   - tag 'A' | row.a terms (sorted by input_index asc) + const term
     ///   - tag 'B' | row.b terms (sorted by input_index asc) + const term
-    ///   - tag 'C' | row.c terms (sorted by input_index asc) + const term
     fn digest(num_steps: usize) -> F {
         let mut bytes: Vec<u8> = Vec::new();
-        bytes.extend_from_slice(b"JOLT_UNIFORM_R1CS");
+        bytes.extend_from_slice(b"JOLT_R1CS_CONSTRAINTS");
         bytes.extend_from_slice(&num_steps.to_be_bytes());
 
         let num_vars: u32 = JoltR1CSInputs::num_inputs() as u32;
         bytes.extend_from_slice(&num_vars.to_be_bytes());
 
-        for row_named in UNIFORM_R1CS.iter() {
+        for row_named in R1CS_CONSTRAINTS.iter() {
             let row = &row_named.cons;
             row.a.serialize_canonical(b'A', &mut bytes);
             row.b.serialize_canonical(b'B', &mut bytes);
-            row.c.serialize_canonical(b'C', &mut bytes);
         }
 
         let mut hasher = Sha3_256::new();

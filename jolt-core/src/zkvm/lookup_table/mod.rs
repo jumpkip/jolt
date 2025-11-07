@@ -11,6 +11,7 @@ use pow2::Pow2Table;
 use pow2_w::Pow2WTable;
 use prefixes::PrefixEval;
 use range_check::RangeCheckTable;
+use range_check_aligned::RangeCheckAlignedTable;
 use serde::{Deserialize, Serialize};
 use shift_right_bitmask::ShiftRightBitmaskTable;
 use sign_extend_half_word::SignExtendHalfWordTable;
@@ -39,7 +40,7 @@ use virtual_xor_rotw::VirtualXORROTWTable;
 use word_alignment::WordAlignmentTable;
 use xor::XorTable;
 
-use crate::field::JoltField;
+use crate::field::{ChallengeFieldOps, FieldChallengeOps, JoltField};
 use derive_more::From;
 use std::fmt::Debug;
 
@@ -56,7 +57,10 @@ pub trait JoltLookupTable: Clone + Debug + Send + Sync + Serialize {
     fn materialize_entry(&self, index: u128) -> u64;
 
     /// Evaluates the MLE of this lookup table on the given point `r`.
-    fn evaluate_mle<F: JoltField>(&self, r: &[F]) -> F;
+    fn evaluate_mle<F, C>(&self, r: &[C]) -> F
+    where
+        C: ChallengeFieldOps<F>,
+        F: JoltField + FieldChallengeOps<C>;
 }
 
 pub trait PrefixSuffixDecomposition<const XLEN: usize>: JoltLookupTable + Default {
@@ -83,6 +87,7 @@ pub mod or;
 pub mod pow2;
 pub mod pow2_w;
 pub mod range_check;
+pub mod range_check_aligned;
 pub mod shift_right_bitmask;
 pub mod sign_extend_half_word;
 pub mod signed_greater_than_equal;
@@ -116,6 +121,7 @@ pub const NUM_LOOKUP_TABLES: usize = LookupTables::<32>::COUNT;
 #[repr(u8)]
 pub enum LookupTables<const XLEN: usize> {
     RangeCheck(RangeCheckTable<XLEN>),
+    RangeCheckAligned(RangeCheckAlignedTable<XLEN>),
     And(AndTable<XLEN>),
     Andn(AndnTable<XLEN>),
     Or(OrTable<XLEN>),
@@ -168,6 +174,7 @@ impl<const XLEN: usize> LookupTables<XLEN> {
     pub fn materialize(&self) -> Vec<u64> {
         match self {
             LookupTables::RangeCheck(table) => table.materialize(),
+            LookupTables::RangeCheckAligned(table) => table.materialize(),
             LookupTables::And(table) => table.materialize(),
             LookupTables::Andn(table) => table.materialize(),
             LookupTables::Or(table) => table.materialize(),
@@ -213,6 +220,7 @@ impl<const XLEN: usize> LookupTables<XLEN> {
     pub fn materialize_entry(&self, index: u128) -> u64 {
         match self {
             LookupTables::RangeCheck(table) => table.materialize_entry(index),
+            LookupTables::RangeCheckAligned(table) => table.materialize_entry(index),
             LookupTables::And(table) => table.materialize_entry(index),
             LookupTables::Andn(table) => table.materialize_entry(index),
             LookupTables::Or(table) => table.materialize_entry(index),
@@ -255,9 +263,14 @@ impl<const XLEN: usize> LookupTables<XLEN> {
         }
     }
 
-    pub fn evaluate_mle<F: JoltField>(&self, r: &[F]) -> F {
+    pub fn evaluate_mle<F, C>(&self, r: &[C]) -> F
+    where
+        C: ChallengeFieldOps<F>,
+        F: JoltField + FieldChallengeOps<C>,
+    {
         match self {
             LookupTables::RangeCheck(table) => table.evaluate_mle(r),
+            LookupTables::RangeCheckAligned(table) => table.evaluate_mle(r),
             LookupTables::And(table) => table.evaluate_mle(r),
             LookupTables::Andn(table) => table.evaluate_mle(r),
             LookupTables::Or(table) => table.evaluate_mle(r),
@@ -303,6 +316,7 @@ impl<const XLEN: usize> LookupTables<XLEN> {
     pub fn suffixes(&self) -> Vec<Suffixes> {
         match self {
             LookupTables::RangeCheck(table) => table.suffixes(),
+            LookupTables::RangeCheckAligned(table) => table.suffixes(),
             LookupTables::And(table) => table.suffixes(),
             LookupTables::Andn(table) => table.suffixes(),
             LookupTables::Or(table) => table.suffixes(),
@@ -352,6 +366,7 @@ impl<const XLEN: usize> LookupTables<XLEN> {
     ) -> F {
         match self {
             LookupTables::RangeCheck(table) => table.combine(prefixes, suffixes),
+            LookupTables::RangeCheckAligned(table) => table.combine(prefixes, suffixes),
             LookupTables::And(table) => table.combine(prefixes, suffixes),
             LookupTables::Andn(table) => table.combine(prefixes, suffixes),
             LookupTables::Or(table) => table.combine(prefixes, suffixes),

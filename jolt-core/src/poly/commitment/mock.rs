@@ -5,9 +5,12 @@ use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 
 use crate::{
     field::JoltField,
-    poly::multilinear_polynomial::MultilinearPolynomial,
+    poly::{
+        commitment::commitment_scheme::StreamingCommitmentScheme,
+        multilinear_polynomial::MultilinearPolynomial,
+    },
     transcripts::{AppendToTranscript, Transcript},
-    utils::errors::ProofVerifyError,
+    utils::{errors::ProofVerifyError, small_scalar::SmallScalar},
 };
 
 use super::commitment_scheme::CommitmentScheme;
@@ -30,7 +33,7 @@ impl<F: JoltField> AppendToTranscript for MockCommitment<F> {
 
 #[derive(CanonicalSerialize, CanonicalDeserialize, Clone, Debug)]
 pub struct MockProof<F: JoltField> {
-    opening_point: Vec<F>,
+    opening_point: Vec<F::Challenge>,
 }
 
 impl<F> CommitmentScheme for MockCommitScheme<F>
@@ -56,13 +59,16 @@ where
         (MockCommitment::default(), ())
     }
 
-    fn batch_commit<P>(polys: &[P], gens: &Self::ProverSetup) -> Vec<Self::Commitment>
+    fn batch_commit<P>(
+        polys: &[P],
+        gens: &Self::ProverSetup,
+    ) -> Vec<(Self::Commitment, Self::OpeningProofHint)>
     where
         P: Borrow<MultilinearPolynomial<Self::Field>>,
     {
         polys
             .iter()
-            .map(|poly| Self::commit(poly.borrow(), gens).0)
+            .map(|poly| (Self::commit(poly.borrow(), gens).0, ()))
             .collect()
     }
 
@@ -82,7 +88,7 @@ where
     fn prove<ProofTranscript: Transcript>(
         _setup: &Self::ProverSetup,
         _poly: &MultilinearPolynomial<Self::Field>,
-        opening_point: &[Self::Field],
+        opening_point: &[<Self::Field as JoltField>::Challenge],
         _: Self::OpeningProofHint,
         _transcript: &mut ProofTranscript,
     ) -> Self::Proof {
@@ -95,7 +101,7 @@ where
         proof: &Self::Proof,
         _setup: &Self::VerifierSetup,
         _transcript: &mut ProofTranscript,
-        opening_point: &[Self::Field],
+        opening_point: &[<Self::Field as JoltField>::Challenge],
         _opening: &Self::Field,
         _commitment: &Self::Commitment,
     ) -> Result<(), ProofVerifyError> {
@@ -105,5 +111,41 @@ where
 
     fn protocol_name() -> &'static [u8] {
         b"mock_commit"
+    }
+}
+impl<F> StreamingCommitmentScheme for MockCommitScheme<F>
+where
+    F: JoltField,
+{
+    type ChunkState = ();
+    type CachedData = ();
+
+    fn prepare_cached_data(_setup: &Self::ProverSetup) -> Self::CachedData {}
+
+    fn process_chunk<T: SmallScalar>(
+        _cached_data: &Self::CachedData,
+        _chunk: &[T],
+    ) -> Self::ChunkState {
+    }
+
+    fn process_chunk_field(
+        _cached_data: &Self::CachedData,
+        _chunk: &[Self::Field],
+    ) -> Self::ChunkState {
+    }
+
+    fn process_chunk_onehot(
+        _cached_data: &Self::CachedData,
+        _onehot_k: usize,
+        _chunk: &[Option<usize>],
+    ) -> Self::ChunkState {
+    }
+
+    fn finalize(
+        _cached_data: &Self::CachedData,
+        _onehot_k: Option<usize>,
+        _chunks: &[Self::ChunkState],
+    ) -> (Self::Commitment, Self::OpeningProofHint) {
+        (MockCommitment::default(), ())
     }
 }

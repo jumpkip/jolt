@@ -4,7 +4,7 @@ use super::prefixes::PrefixEval;
 use super::suffixes::{SuffixEval, Suffixes};
 use super::JoltLookupTable;
 use super::PrefixSuffixDecomposition;
-use crate::field::JoltField;
+use crate::field::{ChallengeFieldOps, FieldChallengeOps, JoltField};
 use crate::utils::uninterleave_bits;
 use crate::zkvm::lookup_table::prefixes::Prefixes;
 
@@ -15,7 +15,7 @@ impl<const XLEN: usize> JoltLookupTable for VirtualRotrTable<XLEN> {
     fn materialize_entry(&self, index: u128) -> u64 {
         let (x_bits, y_bits) = uninterleave_bits(index);
 
-        let mut prod_one_plus_y = 1;
+        let mut prod_one_plus_y: u128 = 1;
         let mut first_sum = 0;
         let mut second_sum = 0;
 
@@ -24,14 +24,17 @@ impl<const XLEN: usize> JoltLookupTable for VirtualRotrTable<XLEN> {
             let y = y_bits >> i & 1;
             first_sum *= 1 + y;
             first_sum += x * y;
-            second_sum += x * (1 - y) * prod_one_plus_y * (1 << i);
-            prod_one_plus_y *= 1 + y;
+            second_sum += x * ((1 - y as u128) * prod_one_plus_y) as u64 * (1 << i);
+            prod_one_plus_y *= 1 + y as u128;
         });
 
         first_sum + second_sum
     }
-
-    fn evaluate_mle<F: JoltField>(&self, r: &[F]) -> F {
+    fn evaluate_mle<F, C>(&self, r: &[C]) -> F
+    where
+        C: ChallengeFieldOps<F>,
+        F: JoltField + FieldChallengeOps<C>,
+    {
         assert_eq!(r.len() % 2, 0, "r must have even length");
         assert_eq!(r.len() / 2, XLEN, "r must have length 2 * XLEN");
 
