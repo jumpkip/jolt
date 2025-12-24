@@ -13,6 +13,9 @@ use sysinfo::System;
 use build_wasm::{build_wasm, modify_cargo_toml};
 use jolt_core::host::toolchain;
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[derive(Parser)]
 #[command(version = version(), about, long_about = None)]
 struct Cli {
@@ -219,8 +222,12 @@ pub fn main() {
     let target_dir = "/tmp/jolt-guest-targets";
     let mut program = guest::compile_fib(target_dir);
 
-    let prover_preprocessing = guest::preprocess_prover_fib(&mut program);
-    let verifier_preprocessing = guest::verifier_preprocessing_from_prover_fib(&prover_preprocessing);
+    let shared_preprocessing = guest::preprocess_shared_fib(&mut program);
+
+    let prover_preprocessing = guest::preprocess_prover_fib(shared_preprocessing.clone());
+    let verifier_setup = prover_preprocessing.generators.to_verifier_setup();
+    let verifier_preprocessing =
+        guest::preprocess_verifier_fib(shared_preprocessing, verifier_setup);
 
     let prove_fib = guest::build_prover_fib(program, prover_preprocessing);
     let verify_fib = guest::build_verifier_fib(verifier_preprocessing);
@@ -249,7 +256,7 @@ jolt = { package = "jolt-sdk", git = "https://github.com/a16z/jolt" }
 
 const GUEST_LIB: &str = r#"#![cfg_attr(feature = "guest", no_std)]
 
-#[jolt::provable(memory_size = 10240, max_trace_length = 65536)]
+#[jolt::provable(memory_size = 32768, max_trace_length = 65536)]
 fn fib(n: u32) -> u128 {
     let mut a: u128 = 0;
     let mut b: u128 = 1;

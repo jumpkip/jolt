@@ -15,11 +15,12 @@ use super::{
 use crate::field::JoltField;
 use crate::poly::multilinear_polynomial::{MultilinearPolynomial, PolynomialEvaluation};
 use crate::poly::rlc_polynomial::RLCPolynomial;
+use crate::zkvm::witness::CommittedPolynomial;
 use crate::{
     msm::VariableBaseMSM,
     poly::{commitment::kzg::SRS, dense_mlpoly::DensePolynomial, unipoly::UniPoly},
     transcripts::{AppendToTranscript, Transcript},
-    utils::errors::ProofVerifyError,
+    utils::{errors::ProofVerifyError, small_scalar::SmallScalar},
 };
 use ark_ec::{pairing::Pairing, AffineRepr, CurveGroup};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
@@ -162,13 +163,15 @@ where
     let f_arc: Vec<Arc<MultilinearPolynomial<P::ScalarField>>> =
         f.iter().map(|poly| Arc::new(poly.clone())).collect();
 
-    // @TODO(markosg04) right now we don't use HyperKZG so we just handle both cases
+    // HyperKZG is not currently used in Jolt, but we handle both dense-only and mixed cases
     let has_one_hot = f_arc
         .iter()
         .any(|poly| matches!(poly.as_ref(), MultilinearPolynomial::OneHot(_)));
 
     let B = if has_one_hot {
-        let rlc_result = RLCPolynomial::linear_combination(f_arc, &q_powers);
+        // Use RLCPolynomial::linear_combination for mixed dense + one-hot polynomials
+        let dummy_poly_ids = vec![CommittedPolynomial::RdInc; f_arc.len()];
+        let rlc_result = RLCPolynomial::linear_combination(dummy_poly_ids, f_arc, &q_powers, None);
         MultilinearPolynomial::RLC(rlc_result)
     } else {
         let poly_refs: Vec<&MultilinearPolynomial<P::ScalarField>> =
@@ -485,7 +488,7 @@ where
         setup: &Self::ProverSetup,
         poly: &MultilinearPolynomial<Self::Field>,
         opening_point: &[<Self::Field as JoltField>::Challenge], // point at which the polynomial is evaluated
-        _: Self::OpeningProofHint,
+        _hint: Option<Self::OpeningProofHint>,
         transcript: &mut ProofTranscript,
     ) -> Self::Proof {
         let eval = poly.evaluate(opening_point);
@@ -505,6 +508,31 @@ where
 
     fn protocol_name() -> &'static [u8] {
         b"hyperkzg"
+    }
+}
+
+impl<P: Pairing> super::commitment_scheme::StreamingCommitmentScheme for HyperKZG<P>
+where
+    <P as Pairing>::ScalarField: JoltField,
+{
+    type ChunkState = ();
+
+    fn process_chunk<T: SmallScalar>(_setup: &Self::ProverSetup, _chunk: &[T]) -> Self::ChunkState {
+    }
+
+    fn process_chunk_onehot(
+        _setup: &Self::ProverSetup,
+        _onehot_k: usize,
+        _chunk: &[Option<usize>],
+    ) -> Self::ChunkState {
+    }
+
+    fn aggregate_chunks(
+        _setup: &Self::ProverSetup,
+        _onehot_k: Option<usize>,
+        _tier1_commitments: &[Self::ChunkState],
+    ) -> (Self::Commitment, Self::OpeningProofHint) {
+        unimplemented!("HyperKZG does not support streaming commitment")
     }
 }
 

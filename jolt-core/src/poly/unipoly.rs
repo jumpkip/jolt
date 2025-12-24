@@ -1,6 +1,7 @@
 use crate::field::{ChallengeFieldOps, FieldChallengeOps, JoltField};
 use std::cmp::Ordering;
-use std::ops::{AddAssign, Index, IndexMut, Mul, MulAssign, Sub};
+use std::iter::zip;
+use std::ops::{Add, AddAssign, Index, IndexMut, Mul, MulAssign, Sub};
 
 use crate::poly::lagrange_poly::LagrangeHelper;
 use crate::transcripts::{AppendToTranscript, Transcript};
@@ -320,15 +321,10 @@ impl<F: JoltField> UniPoly<F> {
     ///
     /// Behavior:
     /// - Computes Σ_{t in domain} s(t) = Σ_j a_j · S_j using i64 power sums and checks equality to `claim`.
-    /// - Independently evaluates and returns s(x) using Horner.
     ///
     /// Returns:
-    /// - (ok, value) where `ok` is true iff the domain-sum equals `claim`, and `value` = s(x).
-    pub fn check_sum_evals_and_set_new_claim<const N: usize, const OUT_LEN: usize>(
-        &self,
-        claim: &F,
-        x: &F::Challenge,
-    ) -> (bool, F) {
+    /// - true iff the domain-sum equals `claim`
+    pub fn check_sum_evals<const N: usize, const OUT_LEN: usize>(&self, claim: F) -> bool {
         // Relaxed: compute Σ_{t in symmetric N-window} s(t) via i128 power sums up to deg(s)
         debug_assert_eq!(self.degree() + 1, OUT_LEN);
         let power_sums = LagrangeHelper::power_sums::<N, OUT_LEN>();
@@ -338,11 +334,7 @@ impl<F: JoltField> UniPoly<F> {
         for (j, coeff) in self.coeffs.iter().enumerate() {
             sum += coeff.mul_i128(power_sums[j]);
         }
-        let ok = sum == *claim;
-
-        // Horner evaluation at x
-        let value = self.evaluate(x);
-        (ok, value)
+        sum == claim
     }
 }
 
@@ -357,6 +349,17 @@ impl<F: JoltField> AddAssign<&Self> for UniPoly<F> {
             self.coeffs
                 .extend(rhs.coeffs[self.coeffs.len()..].iter().cloned());
         }
+    }
+}
+
+impl<F: JoltField> Add for &UniPoly<F> {
+    type Output = UniPoly<F>;
+
+    fn add(self, rhs: Self) -> UniPoly<F> {
+        let mut coeffs = vec![F::zero(); self.coeffs.len().max(rhs.coeffs.len())];
+        zip(&mut coeffs, &self.coeffs).for_each(|(acc, lhs)| *acc += *lhs);
+        zip(&mut coeffs, &rhs.coeffs).for_each(|(acc, rhs)| *acc += *rhs);
+        UniPoly { coeffs }
     }
 }
 
@@ -395,11 +398,11 @@ impl<F: JoltField> Mul<&F> for UniPoly<F> {
     }
 }
 
-impl<F: JoltField> Mul<&F> for &UniPoly<F> {
+impl<F: JoltField> Mul<F> for &UniPoly<F> {
     type Output = UniPoly<F>;
 
-    fn mul(self, rhs: &F) -> UniPoly<F> {
-        UniPoly::from_coeff(self.coeffs.iter().map(|c| *c * *rhs).collect::<Vec<_>>())
+    fn mul(self, rhs: F) -> UniPoly<F> {
+        UniPoly::from_coeff(self.coeffs.iter().map(|c| *c * rhs).collect::<Vec<_>>())
     }
 }
 

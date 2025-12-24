@@ -1,9 +1,11 @@
 use ark_serialize::CanonicalSerialize;
 use jolt_core::host;
-use jolt_core::zkvm::JoltVerifierPreprocessing;
-use jolt_core::zkvm::{Jolt, JoltRV64IMAC};
+use jolt_core::zkvm::prover::JoltProverPreprocessing;
+use jolt_core::zkvm::verifier::{JoltSharedPreprocessing, JoltVerifierPreprocessing};
+use jolt_core::zkvm::{RV64IMACProver, RV64IMACVerifier};
 use std::fs;
 use std::io::Write;
+use std::time::Instant;
 
 // Empirically measured cycles per operation for RV64IMAC
 const CYCLES_PER_SHA256: f64 = 3396.0;
@@ -200,21 +202,22 @@ fn prove_example(
     let mut tasks = Vec::new();
     let mut program = host::Program::new(example_name);
     let (bytecode, init_memory_state, _) = program.decode();
-    let (_, trace, _, program_io) = program.trace(&serialized_input, &[], &[]);
+    let (_lazy_trace, trace, _, program_io) = program.trace(&serialized_input, &[], &[]);
     let padded_trace_len = (trace.len() + 1).next_power_of_two();
     drop(trace);
 
     let task = move || {
-        let preprocessing = JoltRV64IMAC::prover_preprocess(
+        let shared_preprocessing = JoltSharedPreprocessing::new(
             bytecode,
             program_io.memory_layout.clone(),
             init_memory_state,
-            padded_trace_len,
         );
+        let preprocessing =
+            JoltProverPreprocessing::new(shared_preprocessing.clone(), padded_trace_len);
 
         let elf_contents_opt = program.get_elf_contents();
         let elf_contents = elf_contents_opt.as_deref().expect("elf contents is None");
-        let (jolt_proof, program_io, _, _) = JoltRV64IMAC::prove(
+        let prover = RV64IMACProver::gen_from_elf(
             &preprocessing,
             elf_contents,
             &serialized_input,
@@ -222,15 +225,17 @@ fn prove_example(
             &[],
             None,
         );
+        let program_io = prover.program_io.clone();
+        let (jolt_proof, _) = prover.prove();
 
-        let verifier_preprocessing = JoltVerifierPreprocessing::from(&preprocessing);
-        let verification_result =
-            JoltRV64IMAC::verify(&verifier_preprocessing, jolt_proof, program_io, None, None);
-        assert!(
-            verification_result.is_ok(),
-            "Verification failed with error: {:?}",
-            verification_result.err()
+        let verifier_preprocessing = JoltVerifierPreprocessing::new(
+            shared_preprocessing,
+            preprocessing.generators.to_verifier_setup(),
         );
+        let verifier =
+            RV64IMACVerifier::new(&verifier_preprocessing, jolt_proof, program_io, None, None)
+                .expect("Failed to create verifier");
+        verifier.verify().unwrap();
     };
 
     tasks.push((
@@ -257,52 +262,59 @@ fn prove_example_with_trace(
         "Trace is longer than expected"
     );
 
-    let preprocessing = JoltRV64IMAC::prover_preprocess(
+    let shared_preprocessing = JoltSharedPreprocessing::new(
         bytecode.clone(),
         program_io.memory_layout.clone(),
         init_memory_state,
-        trace.len().next_power_of_two(),
     );
+    let preprocessing =
+        JoltProverPreprocessing::new(shared_preprocessing, trace.len().next_power_of_two());
 
     let elf_contents_opt = program.get_elf_contents();
     let elf_contents = elf_contents_opt.as_deref().expect("elf contents is None");
 
-    let span = tracing::info_span!("E2E");
-    let (jolt_proof, program_io, _, prove_duration) = span.in_scope(|| {
-        JoltRV64IMAC::prove(
-            &preprocessing,
-            elf_contents,
-            &serialized_input,
-            &[],
-            &[],
-            None,
-        )
-    });
+    let span = tracing::info_span!("E2E").entered();
+    let prover = RV64IMACProver::gen_from_elf(
+        &preprocessing,
+        elf_contents,
+        &serialized_input,
+        &[],
+        &[],
+        None,
+    );
+    let now = Instant::now();
+    let (jolt_proof, _) = prover.prove();
+    let prove_duration = now.elapsed();
+    drop(span);
     let proof_size = jolt_proof.serialized_size(ark_serialize::Compress::Yes);
-    let proof_size_full_compressed = proof_size
-        - jolt_proof
-            .reduced_opening_proof
-            .serialized_size(ark_serialize::Compress::Yes)
-        + (jolt_proof
-            .reduced_opening_proof
-            .serialized_size(ark_serialize::Compress::No)
-            / 3)
-        - jolt_proof
-            .commitments
-            .serialized_size(ark_serialize::Compress::Yes)
-        + (jolt_proof
-            .commitments
-            .serialized_size(ark_serialize::Compress::No)
-            / 3);
+
+    // Stage 8: Dory opening proof (curve points - benefits from compression)
+    let stage8_size_compressed = jolt_proof
+        .joint_opening_proof
+        .serialized_size(ark_serialize::Compress::Yes);
+    let stage8_size_uncompressed = jolt_proof
+        .joint_opening_proof
+        .serialized_size(ark_serialize::Compress::No);
+
+    // Commitments (curve points - benefits from compression)
+    let commitments_size_compressed = jolt_proof
+        .commitments
+        .serialized_size(ark_serialize::Compress::Yes);
+    let commitments_size_uncompressed = jolt_proof
+        .commitments
+        .serialized_size(ark_serialize::Compress::No);
+
+    // Estimate proof size with full Dory compression (assuming ~3x compression ratio)
+    let proof_size_full_compressed = proof_size - stage8_size_compressed
+        + (stage8_size_uncompressed / 3)
+        - commitments_size_compressed
+        + (commitments_size_uncompressed / 3);
 
     let verifier_preprocessing = JoltVerifierPreprocessing::from(&preprocessing);
-    let verification_result =
-        JoltRV64IMAC::verify(&verifier_preprocessing, jolt_proof, program_io, None, None);
-    assert!(
-        verification_result.is_ok(),
-        "Verification failed with error: {:?}",
-        verification_result.err()
-    );
+    let verifier =
+        RV64IMACVerifier::new(&verifier_preprocessing, jolt_proof, program_io, None, None)
+            .expect("Failed to create verifier");
+    verifier.verify().unwrap();
 
     (
         prove_duration,
